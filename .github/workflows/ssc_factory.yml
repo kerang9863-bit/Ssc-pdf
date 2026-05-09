@@ -10,31 +10,31 @@ jobs:
     timeout-minutes: 130
     permissions:
       contents: write
-    
+
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          
+
       - name: Cache pip dependencies
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
-          
+
       - name: Install dependencies
         run: pip install -r requirements.txt
-        
+
       - name: Run Factory
         env:
           OPENROUTER_API_KEYS: ${{ secrets.OPENROUTER_API_KEYS }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python mega_factory.py
-        
+
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -44,12 +44,23 @@ jobs:
             *.pdf
             *.json
           retention-days: 14
-          
-      - name: Sync to repository
+
+      - name: Sync JSON to repository
         if: always()
         run: |
           git config --local user.email "factory@github.com"
           git config --local user.name "SSC-Factory"
-          git add *.json *.pdf 2>/dev/null || true
-          git diff --staged --quiet || git commit -m "Sync: $(date -u +%Y-%m-%d-%H:%M) [run ${{ github.run_number }}]"
-          git push || echo "Push failed"
+
+          # Only commit JSON files (memory + database), NOT PDFs
+          git add global_memory.json ssc_question_db.json 2>/dev/null || true
+
+          if git diff --staged --quiet; then
+            echo "No JSON changes to commit"
+          else
+            git commit -m "Sync memory: $(date -u +%Y-%m-%d-%H:%M) [run ${{ github.run_number }}]"
+            git push || echo "Push failed"
+          fi
+
+          echo "=== Files in repo ==="
+          ls -la *.json 2>/dev/null || echo "No JSON files"
+          
