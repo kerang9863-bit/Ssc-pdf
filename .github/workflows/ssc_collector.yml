@@ -1,0 +1,33 @@
+name: SSC Mega Collector
+on:
+  schedule:
+    - cron: '0 */3 * * *' # Every 3 hours
+  workflow_dispatch:
+
+jobs:
+  run-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      - name: Install
+        run: pip install requests fpdf
+      - name: Run Scripts
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python collector_gk_eng.py
+          python collector_math_reason.py
+      - name: Update Memory
+        run: |
+          git config --local user.email "bot@github.com"
+          git config --local user.name "SSC-Bot"
+          git add *.json
+          git commit -m "Memory update" || exit 0
+          git push
+          
