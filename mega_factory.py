@@ -51,12 +51,10 @@ def validate_batch(content: str) -> Tuple[bool, str]:
     if len(content) < 500:
         return False, f"Content too short ({len(content)} chars)"
 
-    # Flexible question detection
     questions = re.findall(r'(?:^|\n)(?:Q?\d+[\.\)\:]\s*|Question\s+\d+[\:\.]\s*)', content, re.IGNORECASE)
     if len(questions) < 3:
         questions = re.findall(r'(?:^|\n)\d+[\.\)\:]', content)
 
-    # Flexible answer detection
     answers = re.findall(r'(?i)(?:^|\n)(?:ans(?:wer)?[\:\s]|solution[\:\s]|short\s*trick)', content)
 
     if len(questions) < 3 and len(answers) < 3:
@@ -119,7 +117,6 @@ def fetch_content(subject: str, prompt_detail: str, key_idx: int, retries: int =
             payload = res.json()
             content = payload['choices'][0]['message']['content'].replace("**", "")
 
-            # DEBUG: Show first 300 chars
             preview = content[:300].replace("\n", " | ")
             log(f"DEBUG Response preview: {preview}")
 
@@ -145,13 +142,24 @@ def create_pdf(content: str, subject: str) -> str:
     pdf.add_page()
     pdf.set_auto_page_break(auto=True, margin=15)
 
+    # Try to load Unicode font, fallback to latin-1 safe method
+    use_unicode = False
     try:
-        pdf.add_font("DejaVu", "", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", uni=True)
-        pdf.add_font("DejaVu", "B", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", uni=True)
-        font_name = "DejaVu"
-    except Exception:
+        dejavu_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+        if os.path.exists(dejavu_path):
+            pdf.add_font("DejaVu", "", dejavu_path, uni=True)
+            pdf.add_font("DejaVu", "B", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", uni=True)
+            font_name = "DejaVu"
+            use_unicode = True
+            log("Using DejaVu Unicode font")
+        else:
+            font_name = "Arial"
+            log("DejaVu not found, using Arial with latin-1 fallback")
+    except Exception as e:
         font_name = "Arial"
+        log(f"Font load error: {e}, using Arial")
 
+    # Header
     pdf.set_font(font_name, 'B', 18)
     pdf.set_text_color(0, 51, 102)
     pdf.cell(0, 12, f"SSC {subject.upper()} PRACTICE SET", ln=True, align='C')
@@ -160,6 +168,7 @@ def create_pdf(content: str, subject: str) -> str:
     pdf.cell(0, 6, f"Generated: {datetime.now().strftime('%d %b %Y, %H:%M')}", ln=True, align='C')
     pdf.ln(5)
 
+    # Content
     for line in content.split('\n'):
         line = line.strip()
         if not line:
@@ -179,7 +188,17 @@ def create_pdf(content: str, subject: str) -> str:
             pdf.set_text_color(50, 50, 50)
             pdf.set_font(font_name, '', 10)
 
-        pdf.multi_cell(0, 6, line)
+        # Safe rendering with error handling per line
+        try:
+            if use_unicode:
+                pdf.multi_cell(0, 6, line)
+            else:
+                safe_line = line.encode('latin-1', 'replace').decode('latin-1')
+                pdf.multi_cell(0, 6, safe_line)
+        except Exception as e:
+            log(f"PDF render error for line: {e}")
+            # Skip problematic line
+            continue
 
     fname = f"{subject}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
     pdf.output(fname)
@@ -283,12 +302,15 @@ if __name__ == "__main__":
 
         if len(accumulator) >= 5:
             full_text = "\n\n".join(accumulator)
-            pdf_path = create_pdf(full_text, subject)
-            success = send_to_telegram(pdf_path, subject)
-            if success:
-                log(f"{subject} COMPLETE")
-            else:
-                log(f"{subject} PDF saved locally (Telegram failed)")
+            try:
+                pdf_path = create_pdf(full_text, subject)
+                success = send_to_telegram(pdf_path, subject)
+                if success:
+                    log(f"{subject} COMPLETE")
+                else:
+                    log(f"{subject} PDF saved locally (Telegram failed)")
+            except Exception as e:
+                log(f"PDF creation failed for {subject}: {e}")
         else:
             log(f"{subject} INCOMPLETE: only {len(accumulator)}/5 batches")
 
