@@ -1,0 +1,34 @@
+name: SSC Mega Factory Run
+on:
+  schedule:
+    - cron: '0 0,6,12,18 * * *' # Runs 4 times a day (8 hours total)
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Essential for memory saving
+    steps:
+      - uses: actions/checkout@v3
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      - name: Install
+        run: pip install requests fpdf
+      - name: Run Factory
+        env:
+          OPENROUTER_API_KEYS: ${{ secrets.OPENROUTER_API_KEYS }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python mega_factory.py
+      - name: Sync Memory
+        if: always()
+        run: |
+          git config --local user.email "factory@github.com"
+          git config --local user.name "SSC-Factory-Bot"
+          git add *.json
+          git commit -m "Factory sync" || echo "No changes"
+          git push || echo "Push failed"
+          
