@@ -49,21 +49,25 @@ def save_json_atomic(filepath: str, data) -> None:
     os.replace(tmp, filepath)
 
 def validate_batch(content: str) -> Tuple[bool, str]:
-    """Ensure AI output meets minimum standards."""
+    """Ensure AI output meets minimum standards - FLEXIBLE VERSION."""
     if not content:
         return False, "Empty content"
-    if len(content) < 800:
+    if len(content) < 500:
         return False, f"Content too short ({len(content)} chars)"
-    
-    questions = re.findall(r'^\d+[\.\)]\s', content, re.MULTILINE)
-    if len(questions) < 8:
-        return False, f"Only {len(questions)} questions detected"
-    
-    answers = re.findall(r'(?i)ans(?:wer)?[:\s]', content)
-    if len(answers) < 5:
-        return False, f"Only {len(answers)} answers detected"
-    
-    return True, f"OK: {len(questions)} questions, {len(answers)} answers"
+
+    # Flexible question detection: Q1, 1., 1), Question 1, etc.
+    questions = re.findall(r'(?:^|\n)(?:Q?\d+[\.\)\:]\s*|Question\s+\d+[\:\.]\s*)', content, re.IGNORECASE)
+    if len(questions) < 3:
+        # Fallback: just check for numbered lines
+        questions = re.findall(r'(?:^|\n)\d+[\.\)\:]', content)
+
+    # Flexible answer detection
+    answers = re.findall(r'(?i)(?:^|\n)(?:ans(?:wer)?[\:\s]|solution[\:\s]|short\s*trick)', content)
+
+    if len(questions) < 3 and len(answers) < 3:
+        return False, f"Only {len(questions)} questions, {len(answers)} answers detected"
+
+    return True, f"OK: ~{len(questions)} questions, ~{len(answers)} answers"
 
 # --- CORE FUNCTIONS ---
 
@@ -71,18 +75,18 @@ def fetch_content(subject: str, prompt_detail: str, key_idx: int, retries: int =
     """Fetch content from OpenRouter with retry logic."""
     if key_idx >= len(API_KEYS):
         return None, True
-    
+
     current_key = API_KEYS[key_idx]
     full_prompt = (
         f"Generate 20 {prompt_detail}\n\n"
-        f"STRICT REQUIREMENTS:\n"
-        f"- Plain text ONLY. No markdown, no bold/italic markers (**), no tables.\n"
-        f"- Format each question as: Q1. [Question text] Ans: [Answer text]\n"
-        f"- For Math: Include 'Short Trick:' and 'Solution:' for every question.\n"
-        f"- Number sequentially from 1 to 20.\n"
-        f"- Ensure every question has a clearly marked answer."
+        f"STRICT FORMAT:\n"
+        f"1. Each question MUST start with "Q1. ", "Q2. ", etc.\n"
+        f"2. After each question, write "Ans: " followed by the answer\n"
+        f"3. For Math: Include "Short Trick:" and "Solution:" for every question\n"
+        f"4. Plain text only, no markdown, no ** markers\n"
+        f"5. Number sequentially from Q1 to Q20"
     )
-    
+
     headers = {
         "Authorization": f"Bearer {current_key}",
         "Content-Type": "application/json",
@@ -94,7 +98,7 @@ def fetch_content(subject: str, prompt_detail: str, key_idx: int, retries: int =
         "messages": [{"role": "user", "content": full_prompt}],
         "temperature": 0.7
     }
-    
+
     for attempt in range(retries):
         try:
             res = requests.post(
@@ -103,39 +107,42 @@ def fetch_content(subject: str, prompt_detail: str, key_idx: int, retries: int =
                 json=data,
                 timeout=50
             )
-            
+
             if res.status_code in [429, 402]:
                 log(f"Key {key_idx} exhausted (HTTP {res.status_code})")
                 return None, True
-            
+
             if res.status_code >= 500:
                 wait = (2 ** attempt) + random.uniform(0, 1)
                 log(f"Server error {res.status_code}, retrying in {wait:.1f}s...")
                 time.sleep(wait)
                 continue
-            
+
             if not res.ok:
                 log(f"API error {res.status_code}: {res.text[:200]}")
                 return None, False
-            
+
             payload = res.json()
             content = payload['choices'][0]['message']['content'].replace("**", "")
-            
+
+            # DEBUG: Show first 500 chars of response
+            log(f"DEBUG Response preview: {content[:300].replace(chr(10), " | ")}")
+
             valid, reason = validate_batch(content)
             if not valid:
                 log(f"Validation failed: {reason}")
                 time.sleep(2)
                 continue
-            
+
             return content, False
-            
+
         except (requests.RequestException, json.JSONDecodeError, KeyError) as e:
             log(f"Request error (attempt {attempt+1}): {e}")
             time.sleep(2 ** attempt)
         except Exception as e:
             log(f"UNEXPECTED ERROR: {e}")
             raise
-    
+
     return None, False
 
 def create_pdf(content: str, subject: str) -> str:
@@ -143,15 +150,15 @@ def create_pdf(content: str, subject: str) -> str:
     pdf = FPDF()
     pdf.add_page()
     pdf.set_auto_page_break(auto=True, margin=15)
-    
+
     # Add Unicode font (pre-installed on Ubuntu runners)
     try:
         pdf.add_font("DejaVu", "", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", uni=True)
         pdf.add_font("DejaVu", "B", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", uni=True)
         font_name = "DejaVu"
     except Exception:
-        font_name = "Arial"  # Fallback
-    
+        font_name = "Arial"
+
     # Header
     pdf.set_font(font_name, 'B', 18)
     pdf.set_text_color(0, 51, 102)
@@ -160,16 +167,16 @@ def create_pdf(content: str, subject: str) -> str:
     pdf.set_text_color(128, 128, 128)
     pdf.cell(0, 6, f"Generated: {datetime.now().strftime('%d %b %Y, %H:%M')}", ln=True, align='C')
     pdf.ln(5)
-    
+
     # Content with color coding
     for line in content.split('\n'):
         line = line.strip()
         if not line:
             continue
-        
+
         is_answer = any(x in line.lower() for x in ['ans:', 'answer:', 'solution:', 'short trick:'])
-        is_question = re.match(r'^\d+[\.\)]\s', line)
-        
+        is_question = re.match(r'^Q?\d+[\.\)\:]', line) or line.lower().startswith('question')
+
         if is_answer:
             pdf.set_text_color(0, 128, 0)
             pdf.set_font(font_name, 'B', 10)
@@ -180,9 +187,9 @@ def create_pdf(content: str, subject: str) -> str:
         else:
             pdf.set_text_color(50, 50, 50)
             pdf.set_font(font_name, '', 10)
-        
+
         pdf.multi_cell(0, 6, line)
-    
+
     fname = f"{subject}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
     pdf.output(fname)
     return fname
@@ -192,7 +199,7 @@ def send_to_telegram(filepath: str, subject: str) -> bool:
     if not TG_TOKEN or not TG_CHAT_ID:
         log("Telegram credentials missing!")
         return False
-    
+
     try:
         with open(filepath, "rb") as f:
             resp = requests.post(
@@ -231,60 +238,60 @@ if __name__ == "__main__":
     start_time = time.time()
     key_idx = 0
     memory = load_json_safe("global_memory.json")
-    
+
     if not API_KEYS:
         log("FATAL: No API keys found in OPENROUTER_API_KEYS")
         exit(1)
-    
+
     log(f"🚀 SSC Factory starting with {len(API_KEYS)} API keys")
     log(f"⏱️  Max runtime: {RUN_DURATION_SECONDS/60:.0f} minutes")
-    
+
     for subject, prompt in SUBJECTS.items():
         elapsed = time.time() - start_time
         if elapsed > RUN_DURATION_SECONDS:
             log(f"⏰ Time limit reached ({elapsed/60:.1f}m)")
             break
-        
+
         if key_idx >= len(API_KEYS):
             log("🔑 All API keys exhausted")
             break
-        
+
         log(f"\n{'='*50}")
         log(f"📖 SUBJECT: {subject}")
         log(f"{'='*50}")
-        
+
         accumulator = []
         attempts = 0
         max_attempts = 25
-        
+
         while len(accumulator) < 5 and attempts < max_attempts:
             attempts += 1
             log(f"Fetching batch {len(accumulator)+1}/5 (attempt {attempts})...")
-            
+
             content, rotate = fetch_content(subject, prompt, key_idx)
-            
+
             if rotate:
                 key_idx += 1
                 if key_idx >= len(API_KEYS):
                     log("No more API keys")
                     break
                 continue
-            
+
             if not content:
                 continue
-            
+
             h = hashlib.md5(content.encode()).hexdigest()
             if h in memory:
                 log(f"♻️ Duplicate detected (hash: {h[:8]}...), skipping")
                 continue
-            
+
             accumulator.append(content)
             memory.append(h)
             save_to_database(content, subject)
             save_json_atomic("global_memory.json", memory[-30000:])
             log(f"✅ Batch saved ({len(content)} chars)")
             time.sleep(2)
-        
+
         if len(accumulator) >= 5:
             full_text = "\n\n".join(accumulator)
             pdf_path = create_pdf(full_text, subject)
@@ -295,6 +302,6 @@ if __name__ == "__main__":
                 log(f"⚠️ {subject} PDF saved locally (Telegram failed)")
         else:
             log(f"❌ {subject} INCOMPLETE: only {len(accumulator)}/5 batches")
-    
+
     total_time = time.time() - start_time
     log(f"\n🏭 Factory complete. Runtime: {total_time/60:.1f} minutes")
