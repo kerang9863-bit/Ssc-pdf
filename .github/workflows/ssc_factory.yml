@@ -1,34 +1,55 @@
-name: SSC Mega Factory Run
+name: SSC Mega Factory
 on:
   schedule:
-    - cron: '0 0,6,12,18 * * *' # Runs 4 times a day (8 hours total)
+    - cron: '0 0,6,12,18 * * *'
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 130
     permissions:
-      contents: write # Essential for memory saving
+      contents: write
+    
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
+      
       - name: Setup Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
-      - name: Install
-        run: pip install requests fpdf
+          python-version: '3.11'
+          
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+        
       - name: Run Factory
         env:
           OPENROUTER_API_KEYS: ${{ secrets.OPENROUTER_API_KEYS }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python mega_factory.py
-      - name: Sync Memory
+        
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ssc-factory-${{ github.run_number }}-${{ github.run_attempt }}
+          path: |
+            *.pdf
+            *.json
+          retention-days: 14
+          
+      - name: Sync to repository
         if: always()
         run: |
           git config --local user.email "factory@github.com"
-          git config --local user.name "SSC-Factory-Bot"
-          git add *.json
-          git commit -m "Factory sync" || echo "No changes"
+          git config --local user.name "SSC-Factory"
+          git add *.json *.pdf
+          git diff --staged --quiet || git commit -m "Sync: $(date -u +%Y-%m-%d-%H:%M) [run ${{ github.run_number }}]"
           git push || echo "Push failed"
-          
